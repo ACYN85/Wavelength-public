@@ -107,6 +107,6 @@ The server binds to `0.0.0.0` and uses Render's assigned `PORT`. Production orig
 - Render Free can cold-start after inactivity.
 - The Tailwind CDN works for this portfolio deployment but emits its standard production-use warning. A higher-scale production version should compile and self-host its CSS, pin external assets, and add a reviewed Content Security Policy.
 
-## AI-Assisted Development Disclosure
+## Development Disclosure
 
 This project was developed in part with Google Gemini assistance. I directed the product and game behavior, tested the game, evaluated results, and iterated on the implementation.
