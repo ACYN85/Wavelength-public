@@ -178,14 +178,14 @@
 
             <div id="liveHintBox" class="hidden bg-slate-950 p-4 rounded-xl border border-dashed border-orange-500/40 text-center space-y-1">
                 <span class="text-[10px] uppercase font-black tracking-widest text-orange-400">Active Live Hint:</span>
-                <p id="liveHintText" class="text-xl font-bold text-white tracking-wide">"Waiting for Psychic..."</p>
+                <p id="liveHintText" class="text-xl font-bold text-white tracking-wide"></p>
             </div>
 
             <div class="flex flex-col items-center justify-center relative pt-2">
                 <canvas id="wavelengthCanvas" width="400" height="210" class="w-full max-w-[360px]"></canvas>
                 <div class="w-full flex justify-between px-6 -mt-2 text-sm font-bold">
-                    <span id="leftLabel" class="text-amber-400 max-w-[45%] truncate">Left</span>
-                    <span id="rightLabel" class="text-orange-400 max-w-[45%] truncate">Right</span>
+                    <span id="leftLabel" class="text-amber-400 max-w-[45%] truncate"></span>
+                    <span id="rightLabel" class="text-orange-400 max-w-[45%] truncate"></span>
                 </div>
             </div>
 
@@ -199,11 +199,11 @@
                 <div class="grid grid-cols-2 gap-4">
                     <div>
                         <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Left Pole</label>
-                        <input type="text" id="leftInput" value="Cold" maxlength="40" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none">
+                        <input type="text" id="leftInput" maxlength="40" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none">
                     </div>
                     <div>
                         <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Right Pole</label>
-                        <input type="text" id="rightInput" value="Hot" maxlength="40" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none">
+                        <input type="text" id="rightInput" maxlength="40" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none">
                     </div>
                 </div>
                 <div>
@@ -300,6 +300,7 @@
         const ALLOWED_GUESS_SECONDS = new Set([5, 10, 15, 20, 30, 45, 60]);
         const ALLOWED_INTER_ROUND_SECONDS = new Set([3, 5, 8, 10, 15]);
         const DISCONNECT_GRACE_MS = 8000;
+        const ROLE_DEPARTURE_GRACE_MS = 4000;
         const RANDOM_SELECTION_DURATION_MS = 2400;
         const RANDOM_SELECTION_RESULT_HOLD_MS = 1000;
         const MANUAL_SELECTION_DURATION_MS = 900;
@@ -320,10 +321,14 @@
         let selectionAnimationFrame = null;
         let selectionAnimationRoundId = '';
         let psychicDisconnectTimer = null;
+        let singlePlayerRecoveryTimer = null;
         let guesserDisconnectTimer = null;
         let graceExpiredGuesserIds = new Set();
         let hostDisconnectTimer = null;
+        let hostFailoverSyncTimer = null;
         let stateDiscoveryTimer = null;
+        let authoritativeStateWindowTimer = null;
+        let awaitingAuthoritativeState = false;
         let targetSpinAnimationFrame = null;
         let targetSpinDisplayValue = null;
         let handledStartingRoundId = '';
@@ -352,8 +357,8 @@
             roundPlayerIds: [],
             targetValue: 50,
             activeClue: '',
-            currentLeft: 'Cold',
-            currentRight: 'Hot',
+            currentLeft: '',
+            currentRight: '',
             phase: 'waiting',
             timerValue: -1,
             roundId: '',
@@ -598,15 +603,16 @@
             const hostClientId = normalizeClientId(data.hostClientId);
             const psychicClientId = normalizeClientId(data.psychicClientId);
             const phase = ROUND_PHASES.has(data.phase) ? data.phase : 'waiting';
+            const hasPublishedClue = ['guessing', 'reveal', 'results'].includes(phase);
             const nextState = {
                 hostClientId,
                 psychicClientId,
                 rotationOrder: normalizeClientIdArray(data.rotationOrder),
                 roundPlayerIds: normalizeClientIdArray(data.roundPlayerIds),
                 targetValue: clampNumber(data.targetValue, 0, 100, globalState.targetValue),
-                activeClue: typeof data.activeClue === 'string' ? data.activeClue.slice(0, 200) : '',
-                currentLeft: typeof data.currentLeft === 'string' ? data.currentLeft.slice(0, 40) : 'Cold',
-                currentRight: typeof data.currentRight === 'string' ? data.currentRight.slice(0, 40) : 'Hot',
+                activeClue: hasPublishedClue && typeof data.activeClue === 'string' ? data.activeClue.slice(0, 200) : '',
+                currentLeft: hasPublishedClue && typeof data.currentLeft === 'string' ? data.currentLeft.slice(0, 40) : '',
+                currentRight: hasPublishedClue && typeof data.currentRight === 'string' ? data.currentRight.slice(0, 40) : '',
                 phase,
                 timerValue: Math.floor(clampNumber(data.timerValue, -1, 60, -1)),
                 roundId: normalizeRoundId(data.roundId),
@@ -627,6 +633,11 @@
         function publicGameState() {
             const state = { ...globalState };
             if (!['reveal', 'results'].includes(state.phase)) delete state.targetValue;
+            if (!['guessing', 'reveal', 'results'].includes(state.phase)) {
+                state.activeClue = '';
+                state.currentLeft = '';
+                state.currentRight = '';
+            }
             return state;
         }
 
@@ -642,14 +653,6 @@
                 && message.clientId === globalState.psychicClientId);
         }
 
-        function selectHostCandidate(members) {
-            return [...members].sort((a, b) => {
-                const timeDifference = clampNumber(a.timestamp, 0, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
-                    - clampNumber(b.timestamp, 0, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
-                return timeDifference || String(a.clientId).localeCompare(String(b.clientId));
-            })[0] || null;
-        }
-
         function uniquePresenceMembers(members) {
             const uniqueMembers = new Map();
             members.forEach(member => {
@@ -663,6 +666,61 @@
             return [...uniqueMembers.values()];
         }
 
+        function isCanonicalOrderExtension(currentOrder, nextOrder) {
+            return nextOrder.length >= currentOrder.length
+                && currentOrder.every((clientId, index) => nextOrder[index] === clientId);
+        }
+
+        function selectCanonicalSuccessorClientId(currentHostClientId, canonicalOrder, connectedIds) {
+            const currentIndex = canonicalOrder.indexOf(currentHostClientId);
+            for (let offset = 1; offset <= canonicalOrder.length; offset += 1) {
+                const index = currentIndex >= 0 ? (currentIndex + offset) % canonicalOrder.length : offset - 1;
+                const candidateId = canonicalOrder[index];
+                if (candidateId !== currentHostClientId && connectedIds.has(candidateId)) return candidateId;
+            }
+            return '';
+        }
+
+        function selectHostCandidate(members) {
+            return orderedPresenceMembers(members)[0] || null;
+        }
+
+        function isCleanPregameState(state) {
+            return state.phase === 'waiting'
+                && state.roundNumber === 0
+                && !state.roundId
+                && !state.psychicClientId
+                && state.roundPlayerIds.length === 0
+                && state.timerValue === -1
+                && !state.isPaused;
+        }
+
+        function isAuthorizedRecoveryState(senderClientId, nextState) {
+            if (senderClientId !== globalState.hostClientId
+                || nextState.hostClientId !== globalState.hostClientId
+                || nextState.stateVersion <= globalState.stateVersion
+                || nextState.phase !== 'waiting'
+                || nextState.roundId
+                || nextState.roundPlayerIds.length
+                || nextState.activeClue
+                || nextState.isPaused
+                || !isCanonicalOrderExtension(globalState.rotationOrder, nextState.rotationOrder)) return false;
+
+            const resetsSinglePlayerRoom = activePlayerIds.size <= 1
+                && globalState.roundNumber > 0
+                && nextState.roundNumber === 0
+                && !nextState.psychicClientId
+                && nextState.timerValue === -1;
+            const abortsMissingPsychic = activePlayerIds.size >= 2
+                && ACTIVE_ROUND_PHASES.has(globalState.phase)
+                && Boolean(globalState.psychicClientId)
+                && !activePlayerIds.has(globalState.psychicClientId)
+                && nextState.roundNumber === globalState.roundNumber
+                && nextState.psychicClientId === globalState.psychicClientId
+                && nextState.timerValue === globalState.settings.interRoundSeconds;
+            return resetsSinglePlayerRoom || abortsMissingPsychic;
+        }
+
         function isAuthorizedGameStateMessage(message, nextState) {
             const senderClientId = normalizeClientId(message?.clientId);
             if (!senderClientId || !nextState?.hostClientId) return false;
@@ -672,7 +730,25 @@
                 && !activePlayerIds.has(globalState.hostClientId)
                 && electedHostClientId === senderClientId
                 && nextState.hostClientId === senderClientId;
-            if (isInitialHostState || isHostFailover) return true;
+            const expectedReconnectSuccessor = Array.isArray(nextState.rotationOrder)
+                ? selectCanonicalSuccessorClientId(myClientId, nextState.rotationOrder, activePlayerIds)
+                : '';
+            const isFormerHostResync = awaitingAuthoritativeState
+                && globalState.hostClientId === myClientId
+                && nextState.hostClientId !== myClientId
+                && senderClientId === nextState.hostClientId
+                && senderClientId === expectedReconnectSuccessor
+                && nextState.stateVersion > globalState.stateVersion
+                && (nextState.roundNumber >= globalState.roundNumber || isCleanPregameState(nextState))
+                && isCanonicalOrderExtension(globalState.rotationOrder, nextState.rotationOrder);
+            const isCurrentHostResync = awaitingAuthoritativeState
+                && senderClientId === globalState.hostClientId
+                && nextState.hostClientId === globalState.hostClientId
+                && nextState.stateVersion >= globalState.stateVersion
+                && (nextState.roundNumber >= globalState.roundNumber || isCleanPregameState(nextState))
+                && isCanonicalOrderExtension(globalState.rotationOrder, nextState.rotationOrder);
+            if (isInitialHostState || isHostFailover || isFormerHostResync
+                || isCurrentHostResync || isAuthorizedRecoveryState(senderClientId, nextState)) return true;
             if (nextState.stateVersion < globalState.stateVersion
                 || nextState.roundNumber < globalState.roundNumber) return false;
 
@@ -691,7 +767,7 @@
                 const sameRound = nextState.roundNumber === globalState.roundNumber
                     && nextState.roundId === globalState.roundId
                     && nextState.psychicClientId === globalState.psychicClientId
-                    && arraysEqual(nextState.rotationOrder, globalState.rotationOrder)
+                    && isCanonicalOrderExtension(globalState.rotationOrder, nextState.rotationOrder)
                     && arraysEqual(nextState.roundPlayerIds, globalState.roundPlayerIds);
                 const abortsMissingPsychic = sameRound
                     && ACTIVE_ROUND_PHASES.has(globalState.phase)
@@ -725,7 +801,8 @@
             ]);
             return allowedTransitions.has(transition)
                 && nextState.hostClientId === globalState.hostClientId
-                && (nextState.phase !== 'guessing' || Boolean(nextState.activeClue));
+                && (nextState.phase !== 'guessing'
+                    || Boolean(nextState.activeClue && nextState.currentLeft && nextState.currentRight));
         }
 
         function requestAblyToken(_tokenParams, callback) {
@@ -795,12 +872,16 @@
             writeSessionValue(`wavelength.scored.${roomId}`, JSON.stringify([...scoredRoundIds].slice(-20)));
             writeSessionValue(`wavelength.awards.${roomId}`, JSON.stringify([...awardsPublishedRoundIds].slice(-20)));
             if (globalState.roundId && myClientId === globalState.psychicClientId) {
+                const isDraftingClue = globalState.phase === 'clue';
                 writeSessionValue(`wavelength.psychic.${roomId}`, JSON.stringify({
                     roundId: globalState.roundId,
                     targetValue: globalState.targetValue,
                     targetKnownLocally,
                     guesses: localRoundGuessesReceived,
-                    revealEligibleGuesserIds
+                    revealEligibleGuesserIds,
+                    clueDraft: isDraftingClue ? document.getElementById('clueInput').value.slice(0, 200) : '',
+                    leftPoleDraft: isDraftingClue ? document.getElementById('leftInput').value.slice(0, 40) : '',
+                    rightPoleDraft: isDraftingClue ? document.getElementById('rightInput').value.slice(0, 40) : ''
                 }));
             }
             if (globalState.roundId && Number.isFinite(submittedGuessValue)) {
@@ -838,6 +919,14 @@
                     && Number.isFinite(Number(psychicRuntime.targetValue))) {
                     globalState.targetValue = clampNumber(psychicRuntime.targetValue, 0, 100, 50);
                     targetKnownLocally = Boolean(psychicRuntime.targetKnownLocally);
+                    if (globalState.phase === 'clue') {
+                        document.getElementById('clueInput').value = typeof psychicRuntime.clueDraft === 'string'
+                            ? psychicRuntime.clueDraft.slice(0, 200) : '';
+                        document.getElementById('leftInput').value = typeof psychicRuntime.leftPoleDraft === 'string'
+                            ? psychicRuntime.leftPoleDraft.slice(0, 40) : '';
+                        document.getElementById('rightInput').value = typeof psychicRuntime.rightPoleDraft === 'string'
+                            ? psychicRuntime.rightPoleDraft.slice(0, 40) : '';
+                    }
                     const restoredRevealIds = normalizeClientIdArray(psychicRuntime.revealEligibleGuesserIds)
                         .filter(clientId => clientId !== globalState.psychicClientId
                             && globalState.roundPlayerIds.includes(clientId));
@@ -900,6 +989,10 @@
                 });
                 ably.connection.on((stateChange) => {
                     if (stateChange.current === 'connected') {
+                        if (hasConnectedOnce) {
+                            openAuthoritativeStateWindow();
+                            requestCurrentGameState();
+                        }
                         hasConnectedOnce = true;
                         setConnectionStatus('');
                     } else if (stateChange.current === 'connecting') {
@@ -932,9 +1025,10 @@
                     return;
                 }
                 updateLivePlayerDomGrid();
-                if (isHost) {
+                if (isHost && createdRoomThisLoad) {
                     pushGlobalStateBroadcast();
                 }
+                if (!createdRoomThisLoad) openAuthoritativeStateWindow();
                 requestCurrentGameState();
                 if (!isHost) scheduleStateDiscoveryFallback();
             });
@@ -948,7 +1042,11 @@
                 if (previousRoundId !== globalState.roundId) resetLocalRoundRuntime();
                 if (myClientId === globalState.psychicClientId && !targetKnownLocally) restoreRoundSpecificRuntime();
                 clearTimeout(stateDiscoveryTimer);
+                clearTimeout(authoritativeStateWindowTimer);
+                authoritativeStateWindowTimer = null;
+                awaitingAuthoritativeState = false;
                 isHost = globalState.hostClientId === myClientId;
+                applyFinalizedRoundAward(globalState.roundId);
                 handleLiveTimerSynchronization();
                 handlePsychicSelection();
                 handleStartingPhaseForPsychic();
@@ -986,6 +1084,7 @@
             channel.subscribe('pointsAwarded', (message) => {
                 if (message?.clientId !== globalState.psychicClientId) return;
                 if (normalizeRoundId(message?.data?.roundId) !== globalState.roundId) return;
+                if (!['reveal', 'results'].includes(globalState.phase)) return;
                 const awardsMap = message?.data?.awards;
                 const guessesMap = message?.data?.guesses;
                 if (!awardsMap || typeof awardsMap !== 'object' || !guessesMap || typeof guessesMap !== 'object') return;
@@ -1000,13 +1099,8 @@
                     const guessValue = clampNumber(guessesMap[clientId], 0, 100, NaN);
                     if (Number.isFinite(guessValue)) safeGuesses[clientId] = guessValue;
                 });
-                roundResults = { awards: safeAwards, guesses: safeGuesses };
-                const awardedPoints = safeAwards[myClientId];
-                if (Number.isFinite(awardedPoints) && !scoredRoundIds.has(globalState.roundId)) {
-                    scoredRoundIds.add(globalState.roundId);
-                    myCurrentScore += awardedPoints;
-                    presenceChannel.update({ username: myUsername, score: myCurrentScore });
-                }
+                roundResults = { roundId: globalState.roundId, awards: safeAwards, guesses: safeGuesses };
+                applyFinalizedRoundAward(globalState.roundId);
                 persistLocalRuntime();
                 renderGameInterface();
             });
@@ -1032,9 +1126,32 @@
             renderGameInterface();
         }
 
+        function applyFinalizedRoundAward(roundId) {
+            if (globalState.phase !== 'results'
+                || globalState.roundId !== roundId
+                || roundResults?.roundId !== roundId
+                || scoredRoundIds.has(roundId)) return false;
+            const awardedPoints = roundResults.awards[myClientId];
+            if (!Number.isFinite(awardedPoints)) return false;
+            scoredRoundIds.add(roundId);
+            myCurrentScore += awardedPoints;
+            presenceChannel.update({ username: myUsername, score: myCurrentScore });
+            persistLocalRuntime();
+            return true;
+        }
+
         function requestCurrentGameState() {
             if (!channel) return;
             channel.publish('requestGameState', { requesterClientId: myClientId });
+        }
+
+        function openAuthoritativeStateWindow() {
+            clearTimeout(authoritativeStateWindowTimer);
+            awaitingAuthoritativeState = true;
+            authoritativeStateWindowTimer = setTimeout(() => {
+                authoritativeStateWindowTimer = null;
+                awaitingAuthoritativeState = false;
+            }, ROLE_DEPARTURE_GRACE_MS);
         }
 
         function scheduleStateDiscoveryFallback() {
@@ -1163,7 +1280,7 @@
 
         function handleLiveTimerSynchronization() {
             clearTimeout(localCountdownTimer);
-            if (globalState.isPaused) return;
+            if (globalState.isPaused || singlePlayerRecoveryTimer) return;
             if (globalState.phase === 'guessing' && globalState.timerValue > 0
                 && myClientId === globalState.psychicClientId) {
                 localCountdownTimer = setTimeout(() => {
@@ -1202,6 +1319,150 @@
             }
         }
 
+        function scheduleHostFailoverStateRequest(departedHostClientId) {
+            clearTimeout(hostFailoverSyncTimer);
+            hostFailoverSyncTimer = setTimeout(() => {
+                hostFailoverSyncTimer = null;
+                if (globalState.hostClientId !== departedHostClientId
+                    || activePlayerIds.has(departedHostClientId)) return;
+                requestCurrentGameState();
+            }, 750);
+        }
+
+        function attemptHostFailover(departedHostClientId, members) {
+            const expectedHostClientId = normalizeClientId(departedHostClientId);
+            const currentMembers = uniquePresenceMembers(Array.isArray(members) ? members : []);
+            const currentIds = new Set(currentMembers.map(member => member.clientId));
+            activePlayerIds = currentIds;
+            if (!expectedHostClientId
+                || globalState.hostClientId !== expectedHostClientId
+                || currentIds.has(expectedHostClientId)) return '';
+
+            const nextHost = selectHostCandidate(currentMembers);
+            electedHostClientId = nextHost?.clientId || '';
+            if (!electedHostClientId) return '';
+
+            // Only the deterministic winner may mutate and publish Host ownership.
+            // Everyone else keeps the departed Host locally until the winner's
+            // authenticated state arrives, then asks for that state once as a
+            // convergence fallback in case the first broadcast raced presence sync.
+            if (electedHostClientId !== myClientId) {
+                isHost = false;
+                scheduleHostFailoverStateRequest(expectedHostClientId);
+                return electedHostClientId;
+            }
+
+            clearTimeout(hostFailoverSyncTimer);
+            hostFailoverSyncTimer = null;
+            globalState.hostClientId = myClientId;
+            isHost = true;
+            appendCanonicalPlayerOrder(currentMembers);
+            globalState.stateVersion += 1;
+            if (globalState.psychicClientId === expectedHostClientId
+                && recoverFromMissingPsychic(expectedHostClientId, currentMembers)) {
+                return myClientId;
+            }
+            persistLocalRuntime();
+            pushGlobalStateBroadcast();
+            handleLiveTimerSynchronization();
+            handlePsychicSelection();
+            handleStartingPhaseForPsychic();
+            renderGameInterface();
+            return myClientId;
+        }
+
+        function enterSinglePlayerLobby(connectedIds) {
+            if (!isHost || connectedIds.size > 1 || globalState.roundNumber === 0) return false;
+            clearTimeout(localCountdownTimer);
+            clearTimeout(selectionTransitionTimer);
+            clearTimeout(psychicDisconnectTimer);
+            clearTimeout(singlePlayerRecoveryTimer);
+            psychicDisconnectTimer = null;
+            singlePlayerRecoveryTimer = null;
+            roundStartInFlight = false;
+            globalState.phase = 'waiting';
+            globalState.timerValue = -1;
+            globalState.roundId = '';
+            globalState.roundNumber = 0;
+            globalState.psychicClientId = '';
+            globalState.roundPlayerIds = [];
+            globalState.targetValue = 50;
+            globalState.activeClue = '';
+            globalState.currentLeft = '';
+            globalState.currentRight = '';
+            globalState.roundNotice = 'Waiting for at least one more player…';
+            globalState.isPaused = false;
+            globalState.phaseDeadline = 0;
+            globalState.pausedPhaseRemainingMs = 0;
+            if (globalState.settings.startingPsychic !== 'random'
+                && !connectedIds.has(globalState.settings.startingPsychic)) {
+                globalState.settings = { ...globalState.settings, startingPsychic: 'random' };
+            }
+            globalState.stateVersion += 1;
+            resetLocalRoundRuntime();
+            pushGlobalStateBroadcast();
+            renderGameInterface();
+            return true;
+        }
+
+        function recoverFromMissingPsychic(expectedPsychicClientId, members) {
+            const psychicClientId = normalizeClientId(expectedPsychicClientId);
+            const currentMembers = uniquePresenceMembers(Array.isArray(members) ? members : []);
+            const connectedIds = new Set(currentMembers.map(member => member.clientId));
+            activePlayerIds = connectedIds;
+            if (!isHost || !psychicClientId
+                || globalState.psychicClientId !== psychicClientId
+                || connectedIds.has(psychicClientId)) return false;
+            if (connectedIds.size <= 1) return enterSinglePlayerLobby(connectedIds);
+            if (!ACTIVE_ROUND_PHASES.has(globalState.phase)) return false;
+
+            clearTimeout(localCountdownTimer);
+            clearTimeout(selectionTransitionTimer);
+            clearTimeout(guesserDisconnectTimer);
+            guesserDisconnectTimer = null;
+            roundStartInFlight = false;
+            globalState.phase = 'waiting';
+            globalState.timerValue = globalState.settings.interRoundSeconds;
+            globalState.roundId = '';
+            globalState.roundPlayerIds = [];
+            globalState.targetValue = 50;
+            globalState.activeClue = '';
+            globalState.currentLeft = '';
+            globalState.currentRight = '';
+            globalState.roundNotice = 'The Psychic disconnected. This round was cancelled; the next eligible Psychic will start automatically.';
+            globalState.isPaused = false;
+            globalState.phaseDeadline = 0;
+            globalState.pausedPhaseRemainingMs = 0;
+            globalState.stateVersion += 1;
+            resetLocalRoundRuntime();
+            pushGlobalStateBroadcast();
+            handleLiveTimerSynchronization();
+            renderGameInterface();
+            return true;
+        }
+
+        function suspendRoundForSinglePlayer() {
+            clearTimeout(localCountdownTimer);
+            clearTimeout(selectionTransitionTimer);
+            if (targetSpinAnimationFrame) cancelAnimationFrame(targetSpinAnimationFrame);
+            targetSpinAnimationFrame = null;
+            handledStartingRoundId = '';
+        }
+
+        function scheduleSinglePlayerRecovery() {
+            if (!isHost || globalState.roundNumber === 0 || singlePlayerRecoveryTimer) return;
+            suspendRoundForSinglePlayer();
+            singlePlayerRecoveryTimer = setTimeout(() => {
+                singlePlayerRecoveryTimer = null;
+                if (!isHost || !presenceChannel) return;
+                presenceChannel.get((error, members) => {
+                    if (error || !isHost) return;
+                    const connectedIds = new Set(uniquePresenceMembers(members).map(member => member.clientId));
+                    if (connectedIds.size <= 1) enterSinglePlayerLobby(connectedIds);
+                });
+            }, DISCONNECT_GRACE_MS);
+        }
+
         function updateLivePlayerDomGrid() {
             if (!presenceChannel) return;
             presenceChannel.get((err, members) => {
@@ -1214,70 +1475,64 @@
                     const name = typeof data.username === 'string' ? data.username.slice(0, 30) : 'Unknown';
                     return [member.clientId, name];
                 }));
-                refreshStartingPsychicOptions(uniqueMembers);
+                const canonicalOrderChanged = isHost && appendCanonicalPlayerOrder(uniqueMembers);
+                if (canonicalOrderChanged) globalState.stateVersion += 1;
+                const orderedMembers = orderedPresenceMembers(uniqueMembers);
+                refreshStartingPsychicOptions(orderedMembers);
                 electedHostClientId = selectHostCandidate(uniqueMembers)?.clientId || '';
 
                 const hostExists = Boolean(globalState.hostClientId) && activePlayerIds.has(globalState.hostClientId);
                 if (hostExists) {
                     clearTimeout(hostDisconnectTimer);
                     hostDisconnectTimer = null;
+                    clearTimeout(hostFailoverSyncTimer);
+                    hostFailoverSyncTimer = null;
                 } else if (globalState.hostClientId && uniqueMembers.length > 0 && !hostDisconnectTimer) {
+                    const departedHostClientId = globalState.hostClientId;
                     hostDisconnectTimer = setTimeout(() => {
                         hostDisconnectTimer = null;
                         if (!presenceChannel) return;
                         presenceChannel.get((presenceError, currentMembers) => {
                             if (presenceError) return;
-                            const currentUniqueMembers = uniquePresenceMembers(currentMembers);
-                            const currentIds = new Set(currentUniqueMembers.map(member => member.clientId));
-                            if (currentIds.has(globalState.hostClientId)) return;
-                            const nextHost = selectHostCandidate(currentUniqueMembers);
-                            if (!nextHost) return;
-                            electedHostClientId = nextHost.clientId;
-                            globalState.hostClientId = nextHost.clientId;
-                            globalState.stateVersion += 1;
-                            isHost = nextHost.clientId === myClientId;
-                            renderGameInterface();
-                            if (isHost) pushGlobalStateBroadcast();
+                            attemptHostFailover(departedHostClientId, currentMembers);
                             updateLivePlayerDomGrid();
                         });
-                    }, DISCONNECT_GRACE_MS);
+                    }, ROLE_DEPARTURE_GRACE_MS);
                 } else if (!globalState.hostClientId && uniqueMembers.length > 0) {
                     scheduleStateDiscoveryFallback();
                 }
                 isHost = globalState.hostClientId === myClientId;
 
+                let resumeAfterSinglePlayerGrace = false;
+                if (isHost && uniqueMembers.length <= 1 && globalState.roundNumber > 0) {
+                    scheduleSinglePlayerRecovery();
+                } else if (uniqueMembers.length >= 2 && singlePlayerRecoveryTimer) {
+                    clearTimeout(singlePlayerRecoveryTimer);
+                    singlePlayerRecoveryTimer = null;
+                    resumeAfterSinglePlayerGrace = true;
+                }
+
                 if (activePlayerIds.has(globalState.psychicClientId)) {
                     clearTimeout(psychicDisconnectTimer);
                     psychicDisconnectTimer = null;
                 } else if (isHost && ACTIVE_ROUND_PHASES.has(globalState.phase) && !psychicDisconnectTimer) {
+                    const expectedPsychicClientId = globalState.psychicClientId;
                     psychicDisconnectTimer = setTimeout(() => {
                         psychicDisconnectTimer = null;
                         if (!isHost || !ACTIVE_ROUND_PHASES.has(globalState.phase) || !presenceChannel) return;
                         presenceChannel.get((presenceError, currentMembers) => {
                             if (presenceError) return;
-                            const connectedIds = new Set(uniquePresenceMembers(currentMembers).map(member => member.clientId));
-                            if (connectedIds.has(globalState.psychicClientId)) return;
-                            clearTimeout(localCountdownTimer);
-                            globalState.phase = 'waiting';
-                            globalState.timerValue = globalState.settings.interRoundSeconds;
-                            globalState.activeClue = '';
-                            globalState.isPaused = false;
-                            globalState.phaseDeadline = 0;
-                            globalState.pausedPhaseRemainingMs = 0;
-                            globalState.roundNotice = 'The Psychic disconnected. This round was cancelled; the next round will start automatically.';
-                            globalState.stateVersion += 1;
-                            pushGlobalStateBroadcast();
-                            handleLiveTimerSynchronization();
-                            renderGameInterface();
+                            recoverFromMissingPsychic(expectedPsychicClientId, currentMembers);
+                            updateLivePlayerDomGrid();
                         });
-                    }, DISCONNECT_GRACE_MS);
+                    }, ROLE_DEPARTURE_GRACE_MS);
                 }
 
                 const listContainer = document.getElementById('playerList');
                 if (!listContainer) return;
                 listContainer.replaceChildren();
 
-                uniqueMembers.forEach(member => {
+                orderedMembers.forEach(member => {
                     const id = member.clientId;
                     const memberData = member.data && typeof member.data === 'object' ? member.data : {};
                     const name = typeof memberData.username === 'string' ? memberData.username.slice(0, 30) : "Unknown";
@@ -1330,6 +1585,13 @@
 
                 document.getElementById('hostSection').classList.toggle('hidden', !isHost);
                 renderGameInterface();
+                if (canonicalOrderChanged) pushGlobalStateBroadcast();
+                if (awaitingAuthoritativeState) requestCurrentGameState();
+                if (resumeAfterSinglePlayerGrace) {
+                    handleLiveTimerSynchronization();
+                    handlePsychicSelection();
+                    handleStartingPhaseForPsychic();
+                }
                 if (myClientId === globalState.psychicClientId && globalState.phase === 'guessing') {
                     checkAllEligibleGuessesLocked();
                 }
@@ -1689,6 +1951,7 @@
                     globalState.phase = 'results';
                     globalState.timerValue = globalState.settings.interRoundSeconds;
                     globalState.stateVersion += 1;
+                    applyFinalizedRoundAward(globalState.roundId);
                     pushGlobalStateBroadcast();
                     handleLiveTimerSynchronization();
                     renderGameInterface();
@@ -1719,16 +1982,41 @@
             scoreBanner.classList.add('hidden');
             resultNeedleLabel.classList.add('hidden');
             document.getElementById('clueInput').value = '';
-            document.getElementById('leftInput').value = 'Cold';
-            document.getElementById('rightInput').value = 'Hot';
+            document.getElementById('leftInput').value = '';
+            document.getElementById('rightInput').value = '';
         }
 
-        function orderedPresenceMembers(members) {
+        function fallbackOrderedPresenceMembers(members) {
             return uniquePresenceMembers(members).sort((left, right) => {
                 const timeDifference = clampNumber(left.timestamp, 0, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
                     - clampNumber(right.timestamp, 0, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
                 return timeDifference || left.clientId.localeCompare(right.clientId);
             });
+        }
+
+        function orderedPresenceMembers(members) {
+            const uniqueMembers = uniquePresenceMembers(members);
+            const membersById = new Map(uniqueMembers.map(member => [member.clientId, member]));
+            const orderedMembers = [];
+            globalState.rotationOrder.forEach(clientId => {
+                const member = membersById.get(clientId);
+                if (!member) return;
+                orderedMembers.push(member);
+                membersById.delete(clientId);
+            });
+            fallbackOrderedPresenceMembers([...membersById.values()]).forEach(member => orderedMembers.push(member));
+            return orderedMembers;
+        }
+
+        function appendCanonicalPlayerOrder(members) {
+            if (!isHost || globalState.hostClientId !== myClientId) return false;
+            const expandedOrder = [...globalState.rotationOrder];
+            orderedPresenceMembers(members).forEach(member => {
+                if (!expandedOrder.includes(member.clientId)) expandedOrder.push(member.clientId);
+            });
+            if (arraysEqual(expandedOrder, globalState.rotationOrder)) return false;
+            globalState.rotationOrder = expandedOrder;
+            return true;
         }
 
         function chooseNextPsychic(members) {
@@ -1756,7 +2044,7 @@
 
             return {
                 psychicClientId,
-                rotationOrder: expandedOrder.filter(clientId => activeIds.has(clientId)),
+                rotationOrder: expandedOrder,
                 roundPlayerIds: expandedOrder.filter(clientId => activeIds.has(clientId))
             };
         }
@@ -1787,12 +2075,13 @@
 
         function beginNextRound() {
             if (!isHost || !presenceChannel || roundStartInFlight
+                || singlePlayerRecoveryTimer
                 || globalState.isPaused || !['waiting', 'results'].includes(globalState.phase)) return;
             roundStartInFlight = true;
             renderGameInterface();
             presenceChannel.get((error, members) => {
                 roundStartInFlight = false;
-                if (error || !isHost || globalState.isPaused
+                if (error || !isHost || globalState.isPaused || singlePlayerRecoveryTimer
                     || !['waiting', 'results'].includes(globalState.phase)) {
                     renderGameInterface();
                     return;
@@ -1811,6 +2100,7 @@
                     renderGameInterface();
                     return;
                 }
+                appendCanonicalPlayerOrder(uniqueMembers);
                 const isFirstRound = globalState.roundNumber === 0;
                 const initialSelection = isFirstRound ? chooseInitialPsychic(uniqueMembers) : null;
                 if (isFirstRound && initialSelection.wasRandom
@@ -1820,7 +2110,7 @@
                 const rotation = isFirstRound
                     ? {
                         psychicClientId: initialSelection.psychicClientId,
-                        rotationOrder: initialSelection.activeIds,
+                        rotationOrder: [...globalState.rotationOrder],
                         roundPlayerIds: initialSelection.activeIds
                     }
                     : chooseNextPsychic(uniqueMembers);
@@ -1834,8 +2124,8 @@
                 globalState.phase = isFirstRound ? 'selecting' : 'starting';
                 globalState.timerValue = -1;
                 globalState.activeClue = '';
-                globalState.currentLeft = 'Cold';
-                globalState.currentRight = 'Hot';
+                globalState.currentLeft = '';
+                globalState.currentRight = '';
                 globalState.roundNotice = '';
                 globalState.isPaused = false;
                 globalState.pausedPhaseRemainingMs = 0;
@@ -2083,6 +2373,13 @@
         guessTimeSelect.addEventListener('change', publishPregameSettings);
         interRoundTimeSelect.addEventListener('change', publishPregameSettings);
         startingPsychicSelect.addEventListener('change', publishPregameSettings);
+        ['leftInput', 'rightInput', 'clueInput'].forEach(inputId => {
+            document.getElementById(inputId).addEventListener('input', () => {
+                if (myClientId === globalState.psychicClientId && globalState.phase === 'clue') {
+                    persistLocalRuntime();
+                }
+            });
+        });
 
         btnSendClue.addEventListener('click', () => {
             if (myClientId !== globalState.psychicClientId || globalState.phase !== 'clue'
