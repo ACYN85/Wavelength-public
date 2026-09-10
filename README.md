@@ -111,13 +111,14 @@ This repository is not deployed by default. To create a Render Free Web Service:
 3. Set **Build Command** to `npm ci`.
 4. Set **Start Command** to `npm run start`.
 5. Add `ABLY_API_KEY` as a secret environment variable. Paste the real key only into Render's Environment page.
-6. Add `APP_ORIGIN` with the exact public origin Render assigns, such as `https://your-service.onrender.com`. Do not include a trailing path, query string, or room code.
-7. Leave `PORT` unset unless you have a specific reason to override Render's assigned port.
-8. Deploy, then open the public service URL and verify a two-browser room join.
+6. Leave `APP_ORIGIN` unset for a normal Render hostname. The server automatically validates and uses Render's `RENDER_EXTERNAL_URL`.
+7. If a custom domain becomes the canonical game URL, set `APP_ORIGIN` to that exact HTTPS origin. It overrides `RENDER_EXTERNAL_URL`; do not include a path, query string, or room code.
+8. Leave `PORT` and `RENDER_EXTERNAL_URL` unset in the dashboard because Render supplies them automatically.
+9. Deploy, then open the public service URL and verify a two-browser room join.
 
 The server reads Render's `PORT`, binds on `0.0.0.0`, and falls back to port `8000` locally. Render terminates public HTTPS before forwarding requests to the Node service. Free services can cold-start after inactivity, so the first page or token request can take longer; the existing connecting/reconnecting states remain visible and Ably retries its authenticated connection.
 
-Never commit `.env`. If the Render hostname changes or a custom domain becomes primary, update `APP_ORIGIN` to that exact HTTPS origin and redeploy.
+Never commit `.env`. `APP_ORIGIN` remains available as an explicit override for a future custom domain; otherwise the automatically supplied `RENDER_EXTERNAL_URL` is used.
 
 ### Tailwind production note
 
@@ -135,7 +136,7 @@ For a public deployment, the endpoint is a small server or serverless function t
 
 1. Keep the Ably Root API key in server-side environment configuration only; never put it in this repository or return it to the browser.
 2. Accept the `room` and `clientId` query parameters sent by the client.
-3. Validate that the room matches `^[A-Z0-9]{1,20}$`, validate that the requested client ID matches `^wl-[a-f0-9]{32}$`, and allow only the matching local origin or the exact `APP_ORIGIN` configured for deployment.
+3. Validate that the room matches `^[A-Z0-9]{1,20}$`, validate that the requested client ID matches `^wl-[a-f0-9]{32}$`, and allow only the matching local origin or the resolved production origin (`APP_ORIGIN`, then `RENDER_EXTERNAL_URL`).
 4. Return an Ably TokenRequest generated with the server-side Ably SDK.
 5. Bind the issued token to the requested `clientId` and scope its capability to the room channel `wavelength-lobby-${room}` with only the publish, subscribe, and presence operations needed by this game.
 6. Return CORS headers only for the deployed game origin when the endpoint is on another origin, and avoid logging tokens or sensitive request data.

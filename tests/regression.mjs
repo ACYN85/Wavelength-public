@@ -175,13 +175,25 @@ assert.equal(pauseRaceContext.globalState.roundNumber, 3, 'pausing during an in-
 const originContext = vm.createContext({
     URL,
     PORT: 8000,
-    APP_ORIGIN: 'https://wavelength-example.onrender.com'
+    PRODUCTION_ORIGIN: 'https://wavelength-example.onrender.com'
 });
-for (const name of ['normalizeConfiguredOrigin', 'isAllowedRequestOrigin']) {
+for (const name of ['normalizeConfiguredOrigin', 'resolveProductionOrigin', 'isAllowedRequestOrigin']) {
     vm.runInContext(extractFunction(server, name), originContext);
 }
 assert.equal(originContext.normalizeConfiguredOrigin('https://wavelength-example.onrender.com/'), 'https://wavelength-example.onrender.com');
 assert.throws(() => originContext.normalizeConfiguredOrigin('https://wavelength-example.onrender.com/path'));
+assert.equal(
+    originContext.resolveProductionOrigin('https://custom.example', 'https://wavelength-example.onrender.com'),
+    'https://custom.example',
+    'APP_ORIGIN must override RENDER_EXTERNAL_URL'
+);
+assert.equal(
+    originContext.resolveProductionOrigin('', 'https://wavelength-example.onrender.com/'),
+    'https://wavelength-example.onrender.com',
+    'RENDER_EXTERNAL_URL must be the automatic production fallback'
+);
+assert.equal(originContext.resolveProductionOrigin('', ''), '');
+assert.throws(() => originContext.resolveProductionOrigin('https://custom.example', 'not-an-origin'));
 assert.equal(originContext.isAllowedRequestOrigin('http://localhost:8000'), true);
 assert.equal(originContext.isAllowedRequestOrigin('http://127.0.0.1:8000'), true);
 assert.equal(originContext.isAllowedRequestOrigin('https://wavelength-example.onrender.com'), true);
@@ -231,6 +243,7 @@ assert(!/https?:\/\/(?:localhost|127\.0\.0\.1|[^'"\s]*onrender\.com)/i.test(clie
 assert(!/new\s+Ably\.Realtime\s*\(\s*\{[^}]*\bkey\s*:/s.test(client), 'browser must not contain Ably key auth');
 assert(server.includes('process.env.ABLY_API_KEY'));
 assert(server.includes('process.env.APP_ORIGIN'));
+assert(server.includes('process.env.RENDER_EXTERNAL_URL'));
 assert(server.includes("process.env.PORT || '8000'"));
 assert(server.includes("server.listen(PORT, '0.0.0.0'"));
 assert(server.includes("[channelName]: ['publish', 'subscribe', 'presence']"));
@@ -240,6 +253,7 @@ assert.equal(packageJson.scripts.start, 'node --env-file-if-exists=.env server.m
 assert.equal(packageJson.engines.node, '>=24.10 <25');
 assert(envExample.includes('ABLY_API_KEY=your_ably_api_key_here'));
 assert(envExample.includes('APP_ORIGIN=http://localhost:8000'));
+assert(envExample.includes('Render supplies RENDER_EXTERNAL_URL automatically'));
 assert(/^\.env$/m.test(gitignore), '.env must remain ignored');
 
 console.log('Regression checks passed: syntax, deployment config, origins, DOM/layout, chat validation, settings, pause races, rotation, circular scoring/bands, and auth invariants.');

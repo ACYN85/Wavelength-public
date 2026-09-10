@@ -7,7 +7,10 @@ import * as Ably from 'ably';
 
 const PORT = Number.parseInt(process.env.PORT || '8000', 10);
 const ABLY_API_KEY = process.env.ABLY_API_KEY;
-const APP_ORIGIN = normalizeConfiguredOrigin(process.env.APP_ORIGIN);
+const PRODUCTION_ORIGIN = resolveProductionOrigin(
+    process.env.APP_ORIGIN,
+    process.env.RENDER_EXTERNAL_URL
+);
 const PUBLIC_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
@@ -46,7 +49,7 @@ function isValidClientId(clientId) {
     return CLIENT_ID_PATTERN.test(clientId);
 }
 
-function normalizeConfiguredOrigin(value) {
+function normalizeConfiguredOrigin(value, variableName = 'Configured origin') {
     const configuredValue = String(value || '').trim();
     if (!configuredValue) return '';
     try {
@@ -58,8 +61,17 @@ function normalizeConfiguredOrigin(value) {
         if (!isHttpOrigin || !isOriginOnly) throw new Error('invalid origin');
         return parsedOrigin.origin;
     } catch {
-        throw new Error('APP_ORIGIN must be a complete HTTP(S) origin without a path, query, or fragment.');
+        throw new Error(`${variableName} must be a complete HTTP(S) origin without a path, query, or fragment.`);
     }
+}
+
+function resolveProductionOrigin(appOriginValue, renderExternalUrlValue) {
+    const appOrigin = normalizeConfiguredOrigin(appOriginValue, 'APP_ORIGIN');
+    const renderExternalOrigin = normalizeConfiguredOrigin(
+        renderExternalUrlValue,
+        'RENDER_EXTERNAL_URL'
+    );
+    return appOrigin || renderExternalOrigin;
 }
 
 function isAllowedRequestOrigin(origin) {
@@ -69,7 +81,8 @@ function isAllowedRequestOrigin(origin) {
         const isLocalDevelopmentOrigin = parsedOrigin.protocol === 'http:'
             && ['localhost', '127.0.0.1', '[::1]'].includes(parsedOrigin.hostname)
             && parsedOrigin.port === String(PORT);
-        return isLocalDevelopmentOrigin || Boolean(APP_ORIGIN && parsedOrigin.origin === APP_ORIGIN);
+        return isLocalDevelopmentOrigin
+            || Boolean(PRODUCTION_ORIGIN && parsedOrigin.origin === PRODUCTION_ORIGIN);
     } catch {
         return false;
     }
