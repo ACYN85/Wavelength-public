@@ -109,4 +109,4 @@ The server binds to `0.0.0.0` and uses Render's assigned `PORT`. Production orig
 
 ## AI-Assisted Development Disclosure
 
-This project was developed substantially with Google Gemini assistance. I directed the product and game behavior, tested the game, evaluated results, and iterated on the implementation. This disclosure does not imply that I manually authored every line of code.
+This project was developed in part with Google Gemini assistance. I directed the product and game behavior, tested the game, evaluated results, and iterated on the implementation.
