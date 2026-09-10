@@ -7,6 +7,7 @@ import * as Ably from 'ably';
 
 const PORT = Number.parseInt(process.env.PORT || '8000', 10);
 const ABLY_API_KEY = process.env.ABLY_API_KEY;
+const APP_ORIGIN = normalizeConfiguredOrigin(process.env.APP_ORIGIN);
 const PUBLIC_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
@@ -45,13 +46,30 @@ function isValidClientId(clientId) {
     return CLIENT_ID_PATTERN.test(clientId);
 }
 
-function isAllowedLocalOrigin(origin) {
+function normalizeConfiguredOrigin(value) {
+    const configuredValue = String(value || '').trim();
+    if (!configuredValue) return '';
+    try {
+        const parsedOrigin = new URL(configuredValue);
+        const isHttpOrigin = ['http:', 'https:'].includes(parsedOrigin.protocol);
+        const isOriginOnly = parsedOrigin.pathname === '/'
+            && !parsedOrigin.search && !parsedOrigin.hash
+            && !parsedOrigin.username && !parsedOrigin.password;
+        if (!isHttpOrigin || !isOriginOnly) throw new Error('invalid origin');
+        return parsedOrigin.origin;
+    } catch {
+        throw new Error('APP_ORIGIN must be a complete HTTP(S) origin without a path, query, or fragment.');
+    }
+}
+
+function isAllowedRequestOrigin(origin) {
     if (!origin) return true;
     try {
         const parsedOrigin = new URL(origin);
-        return parsedOrigin.protocol === 'http:'
+        const isLocalDevelopmentOrigin = parsedOrigin.protocol === 'http:'
             && ['localhost', '127.0.0.1', '[::1]'].includes(parsedOrigin.hostname)
             && parsedOrigin.port === String(PORT);
+        return isLocalDevelopmentOrigin || Boolean(APP_ORIGIN && parsedOrigin.origin === APP_ORIGIN);
     } catch {
         return false;
     }
@@ -63,8 +81,12 @@ async function handleTokenRequest(request, response, requestUrl) {
         return sendJson(response, 405, { error: 'Method not allowed.' });
     }
 
-    if (!isAllowedLocalOrigin(request.headers.origin)) {
+    if (!isAllowedRequestOrigin(request.headers.origin)) {
         return sendJson(response, 403, { error: 'Origin is not allowed.' });
+    }
+    if (request.headers.origin) {
+        response.setHeader('Access-Control-Allow-Origin', request.headers.origin);
+        response.setHeader('Vary', 'Origin');
     }
 
     const room = (requestUrl.searchParams.get('room') || '').trim().toUpperCase();
@@ -138,7 +160,7 @@ const server = http.createServer(async (request, response) => {
     }
 });
 
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(PORT, '0.0.0.0', () => {
     console.log(`Wavelength running at http://localhost:${PORT}`);
     console.log('Realtime auth endpoint: /api/ably-token');
 });

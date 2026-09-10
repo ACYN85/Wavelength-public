@@ -60,7 +60,7 @@ Chat reuses the authenticated room channel and adds no Ably capability. Each mes
 
 ## Setup / Running Locally
 
-Prerequisites: Node.js 20.6 or newer and npm.
+Prerequisites: Node.js 24.10–24.x and npm.
 
 1. Install the single server dependency:
 
@@ -77,6 +77,8 @@ Prerequisites: Node.js 20.6 or newer and npm.
    On macOS/Linux, use `cp .env.example .env` instead.
 
 3. Edit `.env` and replace the placeholder with your own Ably API key. Keep this file local; it is ignored by Git.
+
+   For the default local server, set `APP_ORIGIN=http://localhost:8000`. Localhost on the active server port is also accepted when `APP_ORIGIN` is omitted.
 
 4. Start the local server:
 
@@ -98,6 +100,29 @@ The server also supports a public configuration override when the client and aut
 
 Run `npm test` for the client/server regression checks, or `npm run check` for the server syntax check alone. The local server refuses to start when `ABLY_API_KEY` is missing; no real credential is included in this repository.
 
+`npm run start` uses Node's optional `.env` loader. A local `.env` is loaded when present, while production platforms such as Render can provide the same variables directly without creating a file.
+
+## Deploying as a Render Web Service
+
+This repository is not deployed by default. To create a Render Free Web Service:
+
+1. Create a new **Web Service** in Render and connect this repository.
+2. Select the `main` branch and the **Node** runtime.
+3. Set **Build Command** to `npm ci`.
+4. Set **Start Command** to `npm run start`.
+5. Add `ABLY_API_KEY` as a secret environment variable. Paste the real key only into Render's Environment page.
+6. Add `APP_ORIGIN` with the exact public origin Render assigns, such as `https://your-service.onrender.com`. Do not include a trailing path, query string, or room code.
+7. Leave `PORT` unset unless you have a specific reason to override Render's assigned port.
+8. Deploy, then open the public service URL and verify a two-browser room join.
+
+The server reads Render's `PORT`, binds on `0.0.0.0`, and falls back to port `8000` locally. Render terminates public HTTPS before forwarding requests to the Node service. Free services can cold-start after inactivity, so the first page or token request can take longer; the existing connecting/reconnecting states remain visible and Ably retries its authenticated connection.
+
+Never commit `.env`. If the Render hostname changes or a custom domain becomes primary, update `APP_ORIGIN` to that exact HTTPS origin and redeploy.
+
+### Tailwind production note
+
+The current single-file client retains Tailwind's CDN runtime. Replacing it correctly would add a CSS compilation step, Tailwind development dependency/configuration, and a generated stylesheet solely to remove the console warning. That is disproportionate for this small no-build portfolio client, so no build system was added during this pass. The warning is non-functional, but a future production-hardening pass should compile and self-host the Tailwind CSS before treating the project as a higher-scale production service.
+
 ## Required Secure Ably Auth Endpoint
 
 The included `server.mjs` is the smallest local implementation of this endpoint. It runs outside the browser and:
@@ -110,7 +135,7 @@ For a public deployment, the endpoint is a small server or serverless function t
 
 1. Keep the Ably Root API key in server-side environment configuration only; never put it in this repository or return it to the browser.
 2. Accept the `room` and `clientId` query parameters sent by the client.
-3. Validate that the room matches `^[A-Z0-9]{1,20}$`, validate that the requested client ID matches `^wl-[a-f0-9]{32}$`, and apply origin checks and rate limiting appropriate for the deployment.
+3. Validate that the room matches `^[A-Z0-9]{1,20}$`, validate that the requested client ID matches `^wl-[a-f0-9]{32}$`, and allow only the matching local origin or the exact `APP_ORIGIN` configured for deployment.
 4. Return an Ably TokenRequest generated with the server-side Ably SDK.
 5. Bind the issued token to the requested `clientId` and scope its capability to the room channel `wavelength-lobby-${room}` with only the publish, subscribe, and presence operations needed by this game.
 6. Return CORS headers only for the deployed game origin when the endpoint is on another origin, and avoid logging tokens or sensitive request data.
@@ -128,7 +153,7 @@ This is a portfolio-ready game and local auth server, not a cheat-proof producti
 - The active target is omitted from ordinary public state broadcasts, but the Psychic and any client that can tamper with its own runtime remain able to inspect or alter local state.
 - The game state is not durably stored on a backend. Reload recovery is room- and tab-session-scoped; if every participant disconnects at once, there is no authoritative server snapshot to restore.
 - Ably, Tailwind, and the browser runtime are loaded from external/CDN dependencies. A production deployment should pin versions, add an appropriate Content Security Policy, use HTTPS, and review dependency integrity.
-- The local server is intended for development. A public deployment should add authenticated users, stronger abuse controls, HTTPS, and deployment-specific origin configuration before exposing the auth endpoint to the internet.
+- Render supplies HTTPS and the included server supports an exact deployment origin, but a larger public deployment should still add authenticated users, server-enforced abuse controls, and more comprehensive monitoring.
 
 ## AI-Assisted Development Disclosure
 

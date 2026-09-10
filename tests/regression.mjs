@@ -4,6 +4,9 @@ import vm from 'node:vm';
 
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const server = await readFile(new URL('../server.mjs', import.meta.url), 'utf8');
+const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+const envExample = await readFile(new URL('../.env.example', import.meta.url), 'utf8');
+const gitignore = await readFile(new URL('../.gitignore', import.meta.url), 'utf8');
 const scriptMatch = html.match(/<script>\s*([\s\S]*?)<\/script>\s*<\/body>/);
 assert(scriptMatch, 'inline application script must exist');
 const client = scriptMatch[1];
@@ -169,6 +172,21 @@ pendingRoundStart(null, []);
 assert.equal(pauseRaceContext.roundStartInFlight, false);
 assert.equal(pauseRaceContext.globalState.roundNumber, 3, 'pausing during an in-flight handoff must prevent the next round');
 
+const originContext = vm.createContext({
+    URL,
+    PORT: 8000,
+    APP_ORIGIN: 'https://wavelength-example.onrender.com'
+});
+for (const name of ['normalizeConfiguredOrigin', 'isAllowedRequestOrigin']) {
+    vm.runInContext(extractFunction(server, name), originContext);
+}
+assert.equal(originContext.normalizeConfiguredOrigin('https://wavelength-example.onrender.com/'), 'https://wavelength-example.onrender.com');
+assert.throws(() => originContext.normalizeConfiguredOrigin('https://wavelength-example.onrender.com/path'));
+assert.equal(originContext.isAllowedRequestOrigin('http://localhost:8000'), true);
+assert.equal(originContext.isAllowedRequestOrigin('http://127.0.0.1:8000'), true);
+assert.equal(originContext.isAllowedRequestOrigin('https://wavelength-example.onrender.com'), true);
+assert.equal(originContext.isAllowedRequestOrigin('https://wrong-origin.example'), false);
+
 const idsInMarkup = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
 assert.equal(idsInMarkup.length, new Set(idsInMarkup).size, 'DOM ids must be unique');
 const referencedIds = [...client.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map(match => match[1]);
@@ -208,10 +226,20 @@ assert(!extractFunction(client, 'sendChatMessage').includes('username:'), 'chat 
 
 assert(client.includes('authCallback: requestAblyToken'));
 assert(client.includes('useTokenAuth: true'));
+assert(client.includes('window.location.origin + window.location.pathname'), 'invite links must derive from the current website origin');
+assert(!/https?:\/\/(?:localhost|127\.0\.0\.1|[^'"\s]*onrender\.com)/i.test(client), 'client must not hardcode a deployment or development origin');
 assert(!/new\s+Ably\.Realtime\s*\(\s*\{[^}]*\bkey\s*:/s.test(client), 'browser must not contain Ably key auth');
 assert(server.includes('process.env.ABLY_API_KEY'));
+assert(server.includes('process.env.APP_ORIGIN'));
+assert(server.includes("process.env.PORT || '8000'"));
+assert(server.includes("server.listen(PORT, '0.0.0.0'"));
 assert(server.includes("[channelName]: ['publish', 'subscribe', 'presence']"));
 assert(server.includes("fileName === '.env' || fileName.startsWith('.env.')"));
 assert(!server.match(/ABLY_API_KEY\s*=\s*['"][^'"]+['"]/), 'server must not contain a literal Ably credential');
+assert.equal(packageJson.scripts.start, 'node --env-file-if-exists=.env server.mjs');
+assert.equal(packageJson.engines.node, '>=24.10 <25');
+assert(envExample.includes('ABLY_API_KEY=your_ably_api_key_here'));
+assert(envExample.includes('APP_ORIGIN=http://localhost:8000'));
+assert(/^\.env$/m.test(gitignore), '.env must remain ignored');
 
-console.log('Regression checks passed: syntax, DOM/layout, chat validation, settings, pause races, rotation, early reveal, circular scoring/bands, and auth invariants.');
+console.log('Regression checks passed: syntax, deployment config, origins, DOM/layout, chat validation, settings, pause races, rotation, circular scoring/bands, and auth invariants.');
