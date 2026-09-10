@@ -1,160 +1,111 @@
 # Wavelength
 
-Wavelength is a browser-based multiplayer party game where a Psychic gives a clue and Guessers place a dial on a hidden target spectrum in real time.
+Wavelength is a realtime multiplayer browser party game that friends can play online through shareable room links. An HTML5 and vanilla JavaScript client synchronizes gameplay, presence, and chat with Ably Realtime, while a small Node.js server securely issues short-lived, room-scoped Ably tokens.
+
+**[Play the live demo](https://wavelength-mfes.onrender.com/)**
+
+The demo runs on Render Free and may need a short cold-start wait after inactivity.
 
 ## Demo
 
-Live demo: _Add the published demo URL here when one exists._
+### 1. Psychic View
 
-Screenshot placeholders:
+![Psychic view showing the hidden target, clue controls, party list, and chat](docs/media/psychic-view.png)
 
-- `[Capture: lobby, room code, invite link, and player list]`
-- `[Capture: Psychic role with pole labels, target zones, and clue controls]`
-- `[Capture: Guesser role during the synchronized countdown with the target hidden]`
-- `[Capture: target reveal, score banner, and updated player scores]`
-- `[Capture: wide three-column Party / game / Chat layout]`
+The Psychic can see the hidden target and set both spectrum poles and the live clue. The Party, Game, and Chat layout remains visible, while the Psychic correctly has no adjustable guessing needle.
 
-These placeholders are intentionally included for the public portfolio presentation. Replace them with the exact screenshots listed in the final project handoff.
+### 2. Guesser View
+
+![Guesser view showing the live clue, countdown, and adjustable needle](docs/media/guesser-view.png)
+
+The target stays hidden from Guessers while the live clue, synchronized countdown, adjustable needle, Party status, and realtime Chat remain available.
+
+### 3. Round Results
+
+![Round results showing the revealed target, guess, scores, and next-round countdown](docs/media/round-results.png)
+
+The reveal shows the target and guess with tiered scoring feedback. This example also shows scoring bands wrapping across the 0/100 seam, persistent party scores, and the automatic next-round countdown.
 
 ## Key Features
 
-- Room creation and invite-link joining with short room codes
-- Ably-powered realtime presence and synchronized game-state updates
-- Host-controlled lobby start followed by automatic inter-round countdowns and deterministic Psychic rotation
-- Explicit synchronized waiting, Psychic-selection, starting, clue, guessing, reveal, and results phases
-- Automatic hidden-target generation, a Psychic-only wheel-spin animation, customizable spectrum poles, and live clue entry
-- Full-domain 0–100 targets with wrapped scoring bands and circular distance scoring across the 0/100 seam
-- Role-specific dial controls, a configurable synchronized guessing countdown (5–60 seconds), early reveal when every eligible Guesser locks in, target reveal, and result feedback
-- Host-only pre-game controls for guessing time, time between rounds, and the first Psychic (random or selected)
-- A synchronized random-Psychic roulette with a one-second settled-result hold, a shorter selected-Psychic announcement, and Host pause/resume across active play and handoffs
-- Per-round tiered result feedback, player score display, and host kick control
-- A centered desktop game layout with compact Party and Chat sidebars, plus game-first responsive stacking on narrower screens
-- Ephemeral, room-scoped realtime chat with authenticated sender identity, bounded messages, duplicate rejection, and a short send cooldown
-- Safe DOM rendering for untrusted player names and bounded client-side input/state values
-- Token-authentication integration point that keeps Ably credentials out of browser code
-- Minimal Node.js local server that serves the game and signs room-scoped Ably TokenRequests
+- Shareable realtime multiplayer rooms with short invite links
+- Centered **Party | Game | Chat** desktop layout and game-first responsive mobile layout
+- Authenticated, room-scoped realtime chat with safe DOM rendering and lightweight spam protection
+- Host-controlled Start Game, configurable guessing and between-round timers, Pause/Resume, and kick controls
+- Random or manually selected starting Psychic with a synchronized roulette and settled-result hold
+- Automatic Psychic rotation, target-spin animation, and automatic round progression
+- Role-specific interfaces: Psychic target/clue controls and Guesser-only dial controls
+- Live clue publishing with **Send Clue Live**
+- Early reveal after all eligible Guessers lock their round-scoped guesses
+- Full-domain 0–100 targets with circular distance scoring and visual bands that wrap across the seam
+- Participant snapshots, late-join spectator handling, reconnect grace, reload recovery, and deterministic Host failover
+- Persistent scores for the current game session and tiered round-result feedback
 
-## How It Works / Technical Overview
+## How It Works
 
-The single-page client creates or joins a room from the URL, creates a cryptographically random identity in `sessionStorage`, requests a short-lived Ably token bound to that identity from `/api/ably-token`, connects to the room's Ably channel, and enters presence with a display name and score. The Host starts the game once from the lobby. The first Psychic is either chosen with a synchronized roulette or announced from the Host's manual selection; subsequent rounds advance automatically through the connected-player rotation. The selected Psychic owns the hidden target, clue transition, guessing countdown, reveal, and scoring, while the Host owns the inter-round countdown. The Canvas API draws the spectrum, wrapped target zones, spin animation, and role-appropriate dial needle from synchronized state. On wide screens, equal-width secondary rails keep the flexible game surface visually centered between Party and Chat; below the desktop breakpoint, the game appears first and both sidebars stack beneath it.
+The browser creates or joins a room from the current URL and stores a cryptographically random client identity in `sessionStorage`. It requests a short-lived token from `/api/ably-token`; the Node.js server signs that request with the server-only `ABLY_API_KEY` and limits the resulting capability to publish, subscribe, and presence operations for the selected room channel.
 
-For local development, `server.mjs` uses Node's built-in HTTP server to serve the static files and the Ably Node SDK to sign a room-scoped TokenRequest. The server reads `ABLY_API_KEY` only from the local environment.
+Ably Realtime coordinates authenticated client identities, room presence, chat, and explicit synchronized phases: waiting, Psychic selection, target setup, clue entry, guessing, reveal, and results. Participant snapshots keep mid-round joins from changing the active round, while reconnect grace and deterministic rotation handle temporary departures without stalling normal play.
 
-The Host snapshots connected participants and publishes a new round ID in the `selecting` phase for round one or `starting` for later rounds. The Psychic generates and locally caches an integer target anywhere from 0 through 100, animates it as presentation only, then advances through clue, guessing, reveal, and results. Scoring uses the shortest circular distance, so values near 0 and 100 are neighbors; the visual 3/2/1-point bands use the same 3/9/16-distance thresholds and split cleanly across the seam. The target is omitted from public state until reveal. Round IDs, monotonically increasing state versions, phase-transition checks, sender checks, and the participant snapshot reject stale or conflicting actions. Room-scoped session state supports same-tab reload recovery without publishing the hidden target.
+The HTML5 Canvas API draws the spectrum, target bands, target-spin animation, and role-appropriate needle. Scoring uses the shortest circular distance, so positions near 0 and 100 are neighbors and the rendered bands agree with the awarded score across the seam.
 
-Pause/resume is a synchronized Host action. It freezes the roulette deadline, Psychic target animation, guessing timer, result countdown, and cancelled-round handoff; resuming continues from the remaining time instead of restarting the phase. The guessing timer is a maximum: the Psychic moves directly to reveal once every connected Guesser in the round snapshot has locked a unique, round-scoped guess. An unsubmitted Guesser who disconnects receives the same eight-second reconnection grace used by the existing departure flow before being removed from that quorum. Players who arrive during a round are spectators until the next snapshot, and disconnected players are omitted when the next Psychic is chosen.
+## Technology
 
-Successful connection is intentionally silent in the player UI. The status area appears only while connecting/reconnecting or when connection, authentication, input, or room-entry errors require attention; token authentication itself remains unchanged.
+- HTML5, CSS, and vanilla JavaScript
+- Canvas 2D rendering
+- Ably Realtime JavaScript and Node.js SDKs
+- Authenticated Ably client identities, presence, and room-scoped pub/sub
+- Node.js built-in HTTP server for static files and secure token requests
+- Tailwind CSS CDN for the current interface styling
+- Node.js regression suite using `node:assert` and `node:vm`
 
-The player list is assembled with `textContent`, `createElement`, and event listeners. User-controlled usernames are never interpolated into HTML.
+## Testing
 
-Chat reuses the authenticated room channel and adds no Ably capability. Each message is ephemeral and contains only its room ID, bounded text, timestamp, and random message ID. The receiver treats Ably's authenticated `message.clientId` as the sender, resolves the visible name from presence, rejects malformed, duplicate, oversized, stale, wrong-room, and unknown-player messages, and renders message text with `textContent`. A 750 ms client cooldown limits accidental send bursts. There is intentionally no chat history after a full reload.
+Install dependencies and run the reproducible regression checks:
 
-## Technologies
+```text
+npm ci
+npm test
+npm run check
+```
 
-- HTML, CSS, and browser JavaScript
-- Tailwind CSS via the Tailwind CDN for the existing UI styling
-- Ably JavaScript SDK for realtime messaging and presence
-- Node.js and the Ably Node SDK for the local static server and auth endpoint
-- Canvas 2D API for dial and target rendering
+The suite covers circular-scoring edge cases, visual/scoring-band agreement, round and pause-transition races, Psychic rotation, role and settings synchronization, chat validation, deployment origins, DOM references, and authentication/security invariants. Reload, late-join, disconnect, responsive-layout, and multi-browser gameplay behavior have also been exercised manually.
 
-## Setup / Running Locally
+## Running Locally
 
 Prerequisites: Node.js 24.10–24.x and npm.
 
-1. Install the single server dependency:
+1. Install dependencies with `npm ci`.
+2. Copy `.env.example` to `.env`.
+3. Replace the placeholder `ABLY_API_KEY` with your own Ably API key. Keep `.env` local; it is ignored by Git.
+4. Optionally keep `APP_ORIGIN=http://localhost:8000` for the default local server.
+5. Run `npm start` and open `http://localhost:8000/`.
 
-   ```text
-   npm install
-   ```
+The server refuses to start without `ABLY_API_KEY` and never serves `.env` files as static content.
 
-2. Create a local environment file from the placeholder:
+## Deployment
 
-   ```text
-   Copy-Item .env.example .env
-   ```
+The live demo is deployed as a Render Web Service at [wavelength-mfes.onrender.com](https://wavelength-mfes.onrender.com/). Room codes remain temporary, so links should use the base URL unless inviting players to an active room.
 
-   On macOS/Linux, use `cp .env.example .env` instead.
+To deploy a clone on Render:
 
-3. Edit `.env` and replace the placeholder with your own Ably API key. Keep this file local; it is ignored by Git.
+1. Create a Node Web Service from the repository.
+2. Use `npm ci` as the Build Command.
+3. Use `npm run start` as the Start Command.
+4. Add `ABLY_API_KEY` through Render's Environment settings; never commit it.
+5. Leave `PORT` and `RENDER_EXTERNAL_URL` unset because Render supplies both automatically.
+6. Set `APP_ORIGIN` only when a custom domain should override the generated Render origin.
 
-   For the default local server, set `APP_ORIGIN=http://localhost:8000`. Localhost on the active server port is also accepted when `APP_ORIGIN` is omitted.
+The server binds to `0.0.0.0` and uses Render's assigned `PORT`. Production origin validation prefers an explicit `APP_ORIGIN`, otherwise uses the validated `RENDER_EXTERNAL_URL`, and retains a matching localhost origin for development.
 
-4. Start the local server:
+## Security and Limitations
 
-   ```text
-   npm start
-   ```
-
-5. Open `http://localhost:8000/` in a browser, enter a username, and create or join a room.
-
-The server also supports a public configuration override when the client and auth endpoint are hosted separately. Define this object immediately before the inline application script in `index.html`:
-
-   ```html
-   <script>
-     window.WAVELENGTH_CONFIG = {
-       authUrl: "https://your-domain.example/api/ably-token"
-     };
-   </script>
-   ```
-
-Run `npm test` for the client/server regression checks, or `npm run check` for the server syntax check alone. The local server refuses to start when `ABLY_API_KEY` is missing; no real credential is included in this repository.
-
-`npm run start` uses Node's optional `.env` loader. A local `.env` is loaded when present, while production platforms such as Render can provide the same variables directly without creating a file.
-
-## Deploying as a Render Web Service
-
-This repository is not deployed by default. To create a Render Free Web Service:
-
-1. Create a new **Web Service** in Render and connect this repository.
-2. Select the `main` branch and the **Node** runtime.
-3. Set **Build Command** to `npm ci`.
-4. Set **Start Command** to `npm run start`.
-5. Add `ABLY_API_KEY` as a secret environment variable. Paste the real key only into Render's Environment page.
-6. Leave `APP_ORIGIN` unset for a normal Render hostname. The server automatically validates and uses Render's `RENDER_EXTERNAL_URL`.
-7. If a custom domain becomes the canonical game URL, set `APP_ORIGIN` to that exact HTTPS origin. It overrides `RENDER_EXTERNAL_URL`; do not include a path, query string, or room code.
-8. Leave `PORT` and `RENDER_EXTERNAL_URL` unset in the dashboard because Render supplies them automatically.
-9. Deploy, then open the public service URL and verify a two-browser room join.
-
-The server reads Render's `PORT`, binds on `0.0.0.0`, and falls back to port `8000` locally. Render terminates public HTTPS before forwarding requests to the Node service. Free services can cold-start after inactivity, so the first page or token request can take longer; the existing connecting/reconnecting states remain visible and Ably retries its authenticated connection.
-
-Never commit `.env`. `APP_ORIGIN` remains available as an explicit override for a future custom domain; otherwise the automatically supplied `RENDER_EXTERNAL_URL` is used.
-
-### Tailwind production note
-
-The current single-file client retains Tailwind's CDN runtime. Replacing it correctly would add a CSS compilation step, Tailwind development dependency/configuration, and a generated stylesheet solely to remove the console warning. That is disproportionate for this small no-build portfolio client, so no build system was added during this pass. The warning is non-functional, but a future production-hardening pass should compile and self-host the Tailwind CSS before treating the project as a higher-scale production service.
-
-## Required Secure Ably Auth Endpoint
-
-The included `server.mjs` is the smallest local implementation of this endpoint. It runs outside the browser and:
-
-- reads `ABLY_API_KEY` from `.env` through Node's `--env-file` option;
-- serves `index.html` and the other public files; and
-- handles `GET /api/ably-token` without serving `.env` files as static content.
-
-For a public deployment, the endpoint is a small server or serverless function that must:
-
-1. Keep the Ably Root API key in server-side environment configuration only; never put it in this repository or return it to the browser.
-2. Accept the `room` and `clientId` query parameters sent by the client.
-3. Validate that the room matches `^[A-Z0-9]{1,20}$`, validate that the requested client ID matches `^wl-[a-f0-9]{32}$`, and allow only the matching local origin or the resolved production origin (`APP_ORIGIN`, then `RENDER_EXTERNAL_URL`).
-4. Return an Ably TokenRequest generated with the server-side Ably SDK.
-5. Bind the issued token to the requested `clientId` and scope its capability to the room channel `wavelength-lobby-${room}` with only the publish, subscribe, and presence operations needed by this game.
-6. Return CORS headers only for the deployed game origin when the endpoint is on another origin, and avoid logging tokens or sensitive request data.
-
-The client uses an Ably `authCallback` that requests a fresh TokenRequest with the same session-scoped `clientId` whenever Ably connects or refreshes authorization; it never uses `key` authentication. It rejects an auth response whose bound identity differs from its requested identity. This repository includes a local endpoint, but no public deployment is claimed by this portfolio copy. Ably recommends keeping the API key on a trusted server and issuing scoped, time-limited tokens to clients. [Ably token authentication documentation](https://ably.com/docs/auth/token)
-
-## Known Limitations / Security
-
-This is a portfolio-ready game and local auth server, not a cheat-proof production service. Because the current repository does not include an authoritative game backend:
-
-- Host status, role assignment, countdown progression, target generation, clue state, score awards, and kick actions are coordinated by browser clients. Sender checks and bounded state validation reduce accidental misuse, but they cannot establish server-side authority.
-- Chat identity is bound to the authenticated Ably client ID and displayed from presence, but moderation, server-enforced rate limits, durable history, and abuse reporting would require a trusted backend.
-- Host failover is a deterministic client-side presence election. A malicious connected client could still publish forged game messages if the backend grants broad channel publish capability.
-- Scores and round evaluation are computed in the browser and are therefore tamperable. A trusted server would be required for authoritative scoring, anti-cheat enforcement, replay protection, moderation, and durable game history.
-- The active target is omitted from ordinary public state broadcasts, but the Psychic and any client that can tamper with its own runtime remain able to inspect or alter local state.
-- The game state is not durably stored on a backend. Reload recovery is room- and tab-session-scoped; if every participant disconnects at once, there is no authoritative server snapshot to restore.
-- Ably, Tailwind, and the browser runtime are loaded from external/CDN dependencies. A production deployment should pin versions, add an appropriate Content Security Policy, use HTTPS, and review dependency integrity.
-- Render supplies HTTPS and the included server supports an exact deployment origin, but a larger public deployment should still add authenticated users, server-enforced abuse controls, and more comprehensive monitoring.
+- Gameplay authority, scoring, timers, Host election, and moderation are browser-coordinated rather than enforced by a trusted game backend.
+- Chat is authenticated to an Ably client identity but remains ephemeral; it has no durable history or server-enforced moderation.
+- Hidden targets are omitted from ordinary public round state until reveal, but a modified Psychic client can still inspect or alter its own local runtime.
+- Reload recovery is session-scoped. If every player disconnects simultaneously, no durable server snapshot remains.
+- Render Free can cold-start after inactivity.
+- The Tailwind CDN works for this portfolio deployment but emits its standard production-use warning. A higher-scale production version should compile and self-host its CSS, pin external assets, and add a reviewed Content Security Policy.
 
 ## AI-Assisted Development Disclosure
 
