@@ -209,7 +209,7 @@ const spectrumContext = vm.createContext({
 });
 for (const name of [
     'clampNumber', 'normalizeClientId', 'normalizeRoundId', 'normalizeClientIdArray',
-    'normalizeSettings', 'normalizeGameState', 'publicGameState'
+    'normalizeSettings', 'clearUnpublishedRoundContent', 'normalizeGameState', 'publicGameState'
 ]) {
     vm.runInContext(extractFunction(client, name), spectrumContext);
 }
@@ -248,6 +248,71 @@ assert.equal('targetValue' in publishedGuessingState, false, 'guessing must keep
 spectrumContext.globalState = { ...synchronizedSpectrumState, phase: 'results' };
 assert.equal(spectrumContext.publicGameState().currentLeft, 'Cheap', 'results must retain current-round poles');
 
+const labelElements = {
+    leftLabel: { textContent: 'stale left' },
+    rightLabel: { textContent: 'stale right' }
+};
+const labelRenderContext = vm.createContext({
+    isHost: false,
+    globalState: {},
+    document: { getElementById: id => labelElements[id] }
+});
+for (const name of ['clearUnpublishedRoundContent', 'renderSpectrumLabels']) {
+    vm.runInContext(extractFunction(client, name), labelRenderContext);
+}
+for (const viewer of [
+    { label: 'Host', isHost: true, clientId: ids[0] },
+    { label: 'non-Host', isHost: false, clientId: ids[2] }
+]) {
+    labelRenderContext.isHost = viewer.isHost;
+    labelRenderContext.myClientId = viewer.clientId;
+    for (const phase of ['waiting', 'selecting', 'starting', 'clue']) {
+        labelRenderContext.globalState = {
+            ...synchronizedSpectrumState,
+            phase,
+            currentLeft: 'Cheap',
+            currentRight: 'Expensive',
+            activeClue: 'Private draft'
+        };
+        labelRenderContext.renderSpectrumLabels();
+        assert.equal(labelElements.leftLabel.textContent, '', `${viewer.label} must see a blank left label during ${phase}`);
+        assert.equal(labelElements.rightLabel.textContent, '', `${viewer.label} must see a blank right label during ${phase}`);
+        assert.equal(labelRenderContext.globalState.currentLeft, '', `${viewer.label} local state must discard an unpublished left pole during ${phase}`);
+        assert.equal(labelRenderContext.globalState.currentRight, '', `${viewer.label} local state must discard an unpublished right pole during ${phase}`);
+        assert.equal(labelRenderContext.globalState.activeClue, '', `${viewer.label} local state must discard an unpublished clue during ${phase}`);
+    }
+}
+labelRenderContext.globalState = { ...synchronizedSpectrumState, phase: 'guessing' };
+labelRenderContext.renderSpectrumLabels();
+assert.deepEqual(
+    [labelElements.leftLabel.textContent, labelElements.rightLabel.textContent],
+    ['Cheap', 'Expensive'],
+    'Send Clue Live must make the synchronized poles renderable'
+);
+labelRenderContext.globalState = { ...synchronizedSpectrumState, phase: 'results' };
+labelRenderContext.renderSpectrumLabels();
+assert.deepEqual(
+    [labelElements.leftLabel.textContent, labelElements.rightLabel.textContent],
+    ['Cheap', 'Expensive'],
+    'results must retain the current synchronized poles'
+);
+labelRenderContext.globalState.phase = 'starting';
+labelRenderContext.renderSpectrumLabels();
+assert.deepEqual(
+    [labelElements.leftLabel.textContent, labelElements.rightLabel.textContent],
+    ['', ''],
+    'the next round must immediately clear the prior poles for every viewer'
+);
+
+const reloadedHostState = spectrumContext.normalizeGameState({
+    ...synchronizedSpectrumState,
+    hostClientId: ids[0],
+    psychicClientId: ids[1],
+    phase: 'clue'
+});
+assert.equal(reloadedHostState.currentLeft, '', 'a reloaded Host must not restore a stale left pole during clue preparation');
+assert.equal(reloadedHostState.currentRight, '', 'a reloaded Host must not restore a stale right pole during clue preparation');
+
 const draftWrites = new Map();
 const draftContext = vm.createContext({
     roomId: 'ROOM1',
@@ -272,6 +337,7 @@ const draftContext = vm.createContext({
     },
     writeSessionValue: (key, value) => draftWrites.set(key, value)
 });
+vm.runInContext(extractFunction(client, 'clearUnpublishedRoundContent'), draftContext);
 vm.runInContext(extractFunction(client, 'persistLocalRuntime'), draftContext);
 draftContext.persistLocalRuntime();
 const cachedPublicState = JSON.parse(draftWrites.get('wavelength.state.ROOM1'));
@@ -283,6 +349,53 @@ assert.deepEqual(
     [cachedPsychicRuntime.leftPoleDraft, cachedPsychicRuntime.rightPoleDraft, cachedPsychicRuntime.clueDraft],
     ['Tiny', 'Huge', 'Private clue draft'],
     'unsent Psychic inputs must persist only in private round runtime'
+);
+
+const restoredDraftInputs = {
+    clueInput: { value: '' },
+    leftInput: { value: '' },
+    rightInput: { value: '' }
+};
+const draftRestoreContext = vm.createContext({
+    CLIENT_ID_PATTERN: /^wl-[a-f0-9]{32}$/,
+    roomId: 'ROOM1',
+    myClientId: ids[1],
+    targetKnownLocally: false,
+    localRoundGuessesReceived: Object.create(null),
+    revealEligibleGuesserIds: null,
+    submittedGuessValue: null,
+    needleSlider: { value: '50' },
+    globalState: {
+        ...synchronizedSpectrumState,
+        phase: 'clue', activeClue: '', currentLeft: '', currentRight: ''
+    },
+    document: { getElementById: id => restoredDraftInputs[id] },
+    readSessionValue: key => key.includes('wavelength.psychic.')
+        ? JSON.stringify({
+            roundId: synchronizedSpectrumState.roundId,
+            targetValue: 87,
+            targetKnownLocally: true,
+            guesses: {},
+            revealEligibleGuesserIds: [],
+            clueDraft: 'Private clue draft',
+            leftPoleDraft: 'Cheap',
+            rightPoleDraft: 'Expensive'
+        })
+        : ''
+});
+for (const name of ['clampNumber', 'normalizeClientId', 'normalizeClientIdArray', 'restoreRoundSpecificRuntime']) {
+    vm.runInContext(extractFunction(client, name), draftRestoreContext);
+}
+draftRestoreContext.restoreRoundSpecificRuntime();
+assert.deepEqual(
+    [restoredDraftInputs.leftInput.value, restoredDraftInputs.rightInput.value, restoredDraftInputs.clueInput.value],
+    ['Cheap', 'Expensive', 'Private clue draft'],
+    'a reloaded Psychic must recover private drafts in input fields'
+);
+assert.deepEqual(
+    [draftRestoreContext.globalState.currentLeft, draftRestoreContext.globalState.currentRight, draftRestoreContext.globalState.activeClue],
+    ['', '', ''],
+    'restoring private Psychic drafts must not populate synchronized public round content'
 );
 
 const chatCalls = [];
@@ -852,7 +965,11 @@ assert(/<span id="rightLabel"[^>]*>\s*<\/span>/.test(html), 'pre-game right pole
 assert(!/<input[^>]+id="leftInput"[^>]+value=/i.test(html), 'Psychic left-pole input must not have a semantic default');
 assert(!/<input[^>]+id="rightInput"[^>]+value=/i.test(html), 'Psychic right-pole input must not have a semantic default');
 assert(!html.includes('Cold') && !html.includes('Hot'), 'default Hot/Cold poles must not exist in application markup or state');
-assert(extractFunction(client, 'publicGameState').includes("!['guessing', 'reveal', 'results'].includes(state.phase)"));
+assert(extractFunction(client, 'publicGameState').includes('clearUnpublishedRoundContent(globalState)'));
+assert(extractFunction(client, 'renderGameInterface').includes('renderSpectrumLabels()'));
+assert(!extractFunction(client, 'renderSpectrumLabels').includes('leftInput')
+    && !extractFunction(client, 'renderSpectrumLabels').includes('rightInput'),
+'dial labels must never render from private Psychic input values');
 assert(extractFunction(client, 'beginNextRound').includes("globalState.currentLeft = ''"), 'every new round must clear previous poles immediately');
 assert(client.includes('leftPoleDraft') && client.includes('rightPoleDraft') && client.includes('clueDraft'), 'Psychic clue drafts must remain local and reloadable');
 assert(client.includes("'🎯 Bullseye! +3 points'"));

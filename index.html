@@ -598,21 +598,28 @@
                 && left.startingPsychic === right.startingPsychic;
         }
 
+        function clearUnpublishedRoundContent(state) {
+            if (!state || ['guessing', 'reveal', 'results'].includes(state.phase)) return state;
+            state.activeClue = '';
+            state.currentLeft = '';
+            state.currentRight = '';
+            return state;
+        }
+
         function normalizeGameState(data) {
             if (!data || typeof data !== 'object') return null;
             const hostClientId = normalizeClientId(data.hostClientId);
             const psychicClientId = normalizeClientId(data.psychicClientId);
             const phase = ROUND_PHASES.has(data.phase) ? data.phase : 'waiting';
-            const hasPublishedClue = ['guessing', 'reveal', 'results'].includes(phase);
             const nextState = {
                 hostClientId,
                 psychicClientId,
                 rotationOrder: normalizeClientIdArray(data.rotationOrder),
                 roundPlayerIds: normalizeClientIdArray(data.roundPlayerIds),
                 targetValue: clampNumber(data.targetValue, 0, 100, globalState.targetValue),
-                activeClue: hasPublishedClue && typeof data.activeClue === 'string' ? data.activeClue.slice(0, 200) : '',
-                currentLeft: hasPublishedClue && typeof data.currentLeft === 'string' ? data.currentLeft.slice(0, 40) : '',
-                currentRight: hasPublishedClue && typeof data.currentRight === 'string' ? data.currentRight.slice(0, 40) : '',
+                activeClue: typeof data.activeClue === 'string' ? data.activeClue.slice(0, 200) : '',
+                currentLeft: typeof data.currentLeft === 'string' ? data.currentLeft.slice(0, 40) : '',
+                currentRight: typeof data.currentRight === 'string' ? data.currentRight.slice(0, 40) : '',
                 phase,
                 timerValue: Math.floor(clampNumber(data.timerValue, -1, 60, -1)),
                 roundId: normalizeRoundId(data.roundId),
@@ -625,19 +632,16 @@
                 settings: normalizeSettings(data.settings)
             };
 
+            clearUnpublishedRoundContent(nextState);
             // A hidden target is never accepted from ordinary public round state.
             if (!['reveal', 'results'].includes(phase)) nextState.targetValue = globalState.targetValue;
             return nextState;
         }
 
         function publicGameState() {
+            clearUnpublishedRoundContent(globalState);
             const state = { ...globalState };
             if (!['reveal', 'results'].includes(state.phase)) delete state.targetValue;
-            if (!['guessing', 'reveal', 'results'].includes(state.phase)) {
-                state.activeClue = '';
-                state.currentLeft = '';
-                state.currentRight = '';
-            }
             return state;
         }
 
@@ -867,6 +871,7 @@
         }
 
         function persistLocalRuntime() {
+            clearUnpublishedRoundContent(globalState);
             writeSessionValue(`wavelength.state.${roomId}`, JSON.stringify(globalState));
             writeSessionValue(`wavelength.score.${roomId}`, String(myCurrentScore));
             writeSessionValue(`wavelength.scored.${roomId}`, JSON.stringify([...scoredRoundIds].slice(-20)));
@@ -1612,6 +1617,12 @@
             }
         };
 
+        function renderSpectrumLabels() {
+            clearUnpublishedRoundContent(globalState);
+            document.getElementById('leftLabel').textContent = globalState.currentLeft;
+            document.getElementById('rightLabel').textContent = globalState.currentRight;
+        }
+
         function renderGameInterface() {
             const isParticipant = globalState.phase !== 'waiting'
                 && globalState.roundPlayerIds.includes(myClientId);
@@ -1627,8 +1638,7 @@
 
             if (!roleBadge || !roleBanner) return;
 
-            document.getElementById('leftLabel').textContent = globalState.currentLeft;
-            document.getElementById('rightLabel').textContent = globalState.currentRight;
+            renderSpectrumLabels();
             phaseBadge.textContent = globalState.isPaused
                 ? 'Paused'
                 : (globalState.phase === 'starting' ? 'Spinning target'
