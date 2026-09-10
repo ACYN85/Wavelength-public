@@ -1,0 +1,24 @@
+# Local dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs and operating-system files
+*.log
+.DS_Store
+Thumbs.db
+
+# Editor metadata
+.vscode/
+.idea/

@@ -1,0 +1,17 @@
+{
+  "name": "wavelength-public",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "check": "node --check server.mjs",
+    "test": "node tests/regression.mjs",
+    "start": "node --env-file=.env server.mjs"
+  },
+  "dependencies": {
+    "ably": "^2.28.0"
+  }
+}
